@@ -86,36 +86,19 @@ public:
 	}
 };
 
-template <typename T> class Lock
-{
-private:
-	T& lock;
-
-public:
-	Lock(T& lock) : lock(lock)
-	{
-		lock.Lock();
-	}
-
-	~Lock()
-	{
-		lock.Unlock();
-	}
-};
-
 class Semaphore
 {
 private:
-	volatile int count;
-	std::mutex mtx;
-	std::condition_variable cv;
+	int count;
+	Spinlock spinlock;
+	std::condition_variable_any cv;
 
 private:
 	int Try()
 	{
 		if (count == 0)
 		{
-			return -1;
+			return 1;
 		}
 		else
 		{
@@ -132,29 +115,28 @@ public:
 
 	int Post()
 	{
-		mtx.lock();
-		++count;
-		mtx.unlock();
+		{
+			std::unique_lock<Spinlock> lock(spinlock);
+			++count;
+		}
 		cv.notify_one();
 		return 0;
 	}
 
 	int Post(int n)
 	{
-		mtx.lock();
-		count += n;
-		mtx.unlock();
-		while (n > 0)
 		{
-			cv.notify_one();
-			--n;
+			std::unique_lock<Spinlock> lock(spinlock);
+			count += n;
 		}
+		while (n-- > 0)
+			cv.notify_one();
 		return 0;
 	}
 
 	int Wait()
 	{
-		std::unique_lock < std::mutex > lock(mtx);
+		std::unique_lock<Spinlock> lock(spinlock);
 		while (Try())
 			cv.wait(lock);
 		return 0;
@@ -162,13 +144,13 @@ public:
 
 	int TryWait()
 	{
-		std::unique_lock < std::mutex > lock(mtx);
+		std::unique_lock<Spinlock> lock(spinlock);
 		return Try();
 	}
 
 	int TimedWait(int msec)
 	{
-		std::unique_lock < std::mutex > lock(mtx);
+		std::unique_lock<Spinlock> lock(spinlock);
 		if (Try())
 		{
 			cv.wait_for(lock, std::chrono::milliseconds(msec));
