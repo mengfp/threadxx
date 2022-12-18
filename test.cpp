@@ -34,180 +34,6 @@ struct spinlock {
     }
 };
 
-class Semaphore
-{
-private:
-	int count;
-	threadxx::Spinlock lock;
-	std::condition_variable_any cv;
-
-private:
-	int Try()
-	{
-		if (count == 0)
-		{
-			return -1;
-		}
-		else
-		{
-			--count;
-			return 0;
-		}
-	}
-
-public:
-	Semaphore(int ninit = 0) :
-		count(ninit)
-	{
-	}
-
-	int Post()
-	{
-		lock.lock();
-		++count;
-		lock.unlock();
-		cv.notify_one();
-		return 0;
-	}
-
-	int Post(int n)
-	{
-		lock.lock();
-		count += n;
-		lock.unlock();
-		while (n > 0)
-		{
-			cv.notify_one();
-			--n;
-		}
-		return 0;
-	}
-
-	int Wait()
-	{
-		lock.lock();
-		while (Try())
-			cv.wait(lock);
-		lock.unlock();
-		return 0;
-	}
-
-	int TryWait()
-	{
-		lock.lock();
-		auto r = Try();
-		lock.unlock();
-		return r;
-	}
-
-	int TimedWait(int msec)
-	{
-		lock.lock();
-		if (Try())
-		{
-			cv.wait_for(lock, std::chrono::milliseconds(msec));
-			auto r = Try();
-			lock.unlock();
-			return r;
-		}
-		return 0;
-	}
-
-	int Wait(int msec)
-	{
-		if (msec < 0)
-			return Wait();
-		else if (msec == 0)
-			return TryWait();
-		else
-			return TimedWait(msec);
-	}
-};
-
-class semaphore
-{
-private:
-	int count;
-	threadxx::Spinlock mtx;
-	std::condition_variable_any cv;
-
-private:
-	int Try()
-	{
-		if (count == 0)
-		{
-			return -1;
-		}
-		else
-		{
-			--count;
-			return 0;
-		}
-	}
-
-public:
-	semaphore(int ninit = 0) :
-		count(ninit)
-	{
-	}
-
-	int Post()
-	{
-		{
-			std::unique_lock <threadxx::Spinlock> lock(mtx);
-			++count;
-		}
-		cv.notify_one();
-		return 0;
-	}
-
-	int Post(int n)
-	{
-		{
-			std::unique_lock <threadxx::Spinlock> lock(mtx);
-			count += n;
-		}
-		while (n-- > 0)
-			cv.notify_one();
-		return 0;
-	}
-
-	int Wait()
-	{
-		std::unique_lock <threadxx::Spinlock> lock(mtx);
-		while (Try())
-			cv.wait(lock);
-		return 0;
-	}
-
-	int TryWait()
-	{
-		std::unique_lock <threadxx::Spinlock> lock(mtx);
-		return Try();
-	}
-
-	int TimedWait(int msec)
-	{
-		std::unique_lock <threadxx::Spinlock> lock(mtx);
-		if (Try())
-		{
-			cv.wait_for(lock, std::chrono::milliseconds(msec));
-			return Try();
-		}
-		return 0;
-	}
-
-	int Wait(int msec)
-	{
-		if (msec < 0)
-			return Wait();
-		else if (msec == 0)
-			return TryWait();
-		else
-			return TimedWait(msec);
-	}
-};
-
 template <class Spinlock>
 void test_spinlock()
 {
@@ -245,6 +71,92 @@ void test_spinlock()
     t1.PostMessage(1);
     t2.PostMessage(1);
 }
+
+// threadxx::Semaphore - previous implement
+class Semaphore
+{
+private:
+	int count;
+	std::mutex mtx;
+	std::condition_variable cv;
+
+private:
+	int Try()
+	{
+		if (count == 0)
+		{
+			return -1;
+		}
+		else
+		{
+			--count;
+			return 0;
+		}
+	}
+
+public:
+	Semaphore(int ninit = 0) :
+		count(ninit)
+	{
+	}
+
+	int Post()
+	{
+		mtx.lock();
+		++count;
+		mtx.unlock();
+		cv.notify_one();
+		return 0;
+	}
+
+	int Post(int n)
+	{
+		mtx.lock();
+		count += n;
+		mtx.unlock();
+		while (n > 0)
+		{
+			cv.notify_one();
+			--n;
+		}
+		return 0;
+	}
+
+	int Wait()
+	{
+		std::unique_lock < std::mutex > lock(mtx);
+		while (Try())
+			cv.wait(lock);
+		return 0;
+	}
+
+	int TryWait()
+	{
+		std::unique_lock < std::mutex > lock(mtx);
+		return Try();
+	}
+
+	int TimedWait(int msec)
+	{
+		std::unique_lock < std::mutex > lock(mtx);
+		if (Try())
+		{
+			cv.wait_for(lock, std::chrono::milliseconds(msec));
+			return Try();
+		}
+		return 0;
+	}
+
+	int Wait(int msec)
+	{
+		if (msec < 0)
+			return Wait();
+		else if (msec == 0)
+			return TryWait();
+		else
+			return TimedWait(msec);
+	}
+};
 
 template <class Sema>
 void test_semaphore()
@@ -284,19 +196,88 @@ void test_semaphore()
 	t2.PostMessage(1);
 }
 
+// threadxx::BlockingQueue - previouse implement
+template<typename T>
+class BlockingQueue : public threadxx::SafeQueue<T>
+{
+private:
+	threadxx::Semaphore sem;
+
+public:
+	void Push(const T& t)
+	{
+		threadxx::SafeQueue<T>::Push(t);
+		sem.Post();
+	}
+
+	int Pop(T& t, int timeout = -1)
+	{
+		if (sem.Wait(timeout) == 0)
+			return threadxx::SafeQueue<T>::Pop(t);
+		else
+			return -1;
+	}
+};
+
+template <class Q>
+void test_blocking_queue()
+{
+	class MyThread : public threadxx::Thread
+	{
+	private:
+		Q& q;
+		uint64_t t;
+
+	public:
+		MyThread(Q& q) : q(q), t(0)
+		{
+		}
+
+		~MyThread()
+		{
+			Quit();
+			std::cout << "timer = " << t / 1000000 << std::endl;
+		}
+
+		void OnMessage(threadxx::Message&)
+		{
+			ticktock tt(t);
+			for (int i = 0; i < 10000000; i++)
+			{
+				int x;
+				q.Pop(x);
+				q.Push(x + 1);
+			}
+		}
+	};
+
+	Q q;
+	q.Push(0);
+
+	MyThread t1(q), t2(q);
+	t1.PostMessage(1);
+	t2.PostMessage(1);
+}
+
 int main()
 {
-	std::cout << "Testing spinlock:" << std::endl;
+	std::cout << "Testing spinlock" << std::endl;
     test_spinlock<spinlock>();
 
-	std::cout << "Testing threadxx::Spinlock:" << std::endl;
+	std::cout << "Testing threadxx::Spinlock" << std::endl;
 	test_spinlock<threadxx::Spinlock>();
 
-	std::cout << "Testing semaphore:" << std::endl;
-	test_semaphore<semaphore>();
+	std::cout << "Testing Semaphore" << std::endl;
+	test_semaphore<Semaphore>();
 
-	std::cout << "Testing threadxx::Semaphore:" << std::endl;
+	std::cout << "Testing threadxx::Semaphore" << std::endl;
 	test_semaphore<threadxx::Semaphore>();
 
+	std::cout << "Testing BlockingQueue" << std::endl;
+	test_blocking_queue<BlockingQueue<int>>();
+
+	std::cout << "Testing threadxx::BlockingQueue" << std::endl;
+	test_blocking_queue<threadxx::BlockingQueue<int>>();
+	
     return 0;
 }

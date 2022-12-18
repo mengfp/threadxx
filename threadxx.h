@@ -170,61 +170,89 @@ public:
 	}
 };
 
-template<typename T> class SafeQueue : public std::queue<T>
+template<typename T>
+class SafeQueue : public std::queue<T>
 {
 private:
-	Spinlock spin;
+	Spinlock spinlock;
 
 public:
 	int IsEmpty()
 	{
-		spin.Lock();
-		int r = std::queue<T>::empty();
-		spin.Unlock();
-		return r;
+		std::unique_lock<Spinlock> lock(spinlock);
+		return std::queue<T>::empty();
 	}
 
-	void Push(T t)
+	void Push(const T& t)
 	{
-		spin.Lock();
+		std::unique_lock<Spinlock> lock(spinlock);
 		std::queue<T>::push(t);
-		spin.Unlock();
 	}
 
 	int Pop(T& t)
 	{
-		int r = 0;
-		spin.Lock();
+		std::unique_lock<Spinlock> lock(spinlock);
 		if (std::queue<T>::empty())
-			r = -1;
+			return 1;
 		else
 		{
 			t = std::queue<T>::front();
 			std::queue<T>::pop();
+			return 0;
 		}
-		spin.Unlock();
-		return r;
 	}
 };
 
-template<typename T> class BlockingQueue : public SafeQueue<T>
+template<typename T>
+class BlockingQueue : public std::queue<T>
 {
 private:
-	Semaphore sem;
+	Spinlock spinlock;
+	std::condition_variable_any cv;
 
 public:
-	void Push(T t)
+	int IsEmpty()
 	{
-		SafeQueue<T>::Push(t);
-		sem.Post();
+		std::unique_lock<Spinlock> lock(spinlock);
+		return std::queue<T>::empty();
+	}
+
+	void Push(const T& t)
+	{
+		{
+			std::unique_lock<Spinlock> lock(spinlock);
+			std::queue<T>::push(t);
+		}
+		cv.notify_one();
 	}
 
 	int Pop(T& t, int timeout = -1)
 	{
-		if (sem.Wait(timeout) == 0)
-			return SafeQueue<T>::Pop(t);
+		std::unique_lock<Spinlock> lock(spinlock);
+
+		if (!std::queue<T>::empty())
+		{
+			t = std::queue<T>::front();
+			std::queue<T>::pop();
+			return 0;
+		}
+
+		if (timeout == 0)
+			return 1;
+		
+		if (timeout < 0)
+			cv.wait(lock);
 		else
-			return -1;
+			cv.wait_for(lock, std::chrono::milliseconds(timeout));
+
+		if (!std::queue<T>::empty())
+		{
+			t = std::queue<T>::front();
+			std::queue<T>::pop();
+			return 0;
+		}
+
+		return 1;
 	}
 };
 
