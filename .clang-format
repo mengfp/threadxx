@@ -1,0 +1,13 @@
+---
+Language:        Cpp
+BasedOnStyle:  Google
+DerivePointerAlignment: false
+PointerAlignment: Left
+BinPackArguments: false
+BinPackParameters: false
+AllowAllParametersOfDeclarationOnNextLine: false
+AllowShortFunctionsOnASingleLine: None
+ContinuationIndentWidth: 2
+ConstructorInitializerIndentWidth: 2
+...
+
