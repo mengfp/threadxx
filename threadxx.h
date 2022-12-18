@@ -62,7 +62,7 @@ public:
 
 	bool Try()
 	{
-		return !m_lock.test_and_set(std::memory_order_acquire);
+		return !flag.test_and_set(std::memory_order_acquire);
 	}
 
 	void Unlock()
