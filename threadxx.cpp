@@ -1,8 +1,6 @@
-#include "threadxx.h"
-
 #include <iostream>
-
 #include "ticktock.h"
+#include "threadxx.h"
 
 // Erik Rigtorp
 struct spinlock {

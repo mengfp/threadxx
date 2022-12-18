@@ -326,8 +326,8 @@ class Thread {
   bool quit;
 
  private:
-  static void* ThreadProc(void* p) {
-    return ((Thread*)p)->Run();
+  static void ThreadProc(Thread* p) {
+    p->Run();
   }
 
   void ProcessMessage(Message* p) {
@@ -338,27 +338,23 @@ class Thread {
       timeout = (int)p->wParam;
     else
       quit = true;
-    delete p;
   }
 
-  void* Run() {
+  void Run() {
+    Message* p = nullptr;
     while (!quit) {
-      Message* p = nullptr;
-      if (mq->Pop(p, timeout) == 0 && p)
+      if (mq->Pop(p, timeout) == 0 && p) {
         ProcessMessage(p);
-      else
-        OnTimeout();
-      while (true) {
-        if (mq->Pop(p, 0) == 0 && p)
+        delete p;
+        while (mq->TryPop(p) == 0 && p) {
           ProcessMessage(p);
-        else {
-          OnIdle();
-          if (mq->IsEmpty()) break;
+          delete p;
         }
-      }
+        OnIdle();
+      } else
+        OnTimeout();
     }
     OnQuit();
-    return 0;
   }
 };
 
