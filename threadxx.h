@@ -60,16 +60,26 @@ public:
 			yield();
 	}
 
+	bool Try()
+	{
+		return !m_lock.test_and_set(std::memory_order_acquire);
+	}
+
 	void Unlock()
 	{
 		flag.clear(std::memory_order_release);
 	}
-
+	
 	void lock()
 	{
 		Lock();
 	}
-
+	
+	bool try_lock()
+	{
+		return Try();
+	}
+	
 	void unlock()
 	{
 		Unlock();
