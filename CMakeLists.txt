@@ -1,15 +1,17 @@
-﻿# CMakeList.txt : CMake project for threadxx, include source and define
-# project specific logic here.
-#
-cmake_minimum_required (VERSION 3.8)
+cmake_minimum_required(VERSION 3.10.0)
 
-project ("threadxx")
+project(threadxx)
 
-# Add source to this project's executable.
-add_executable (threadxx "threadxx.cpp" "threadxx.h")
-
-if (CMAKE_VERSION VERSION_GREATER 3.12)
-  set_property(TARGET threadxx PROPERTY CXX_STANDARD 20)
+if(NOT CMAKE_BUILD_TYPE)
+    message(STATUS "compile with release mode")
+    set(CMAKE_BUILD_TYPE "Release")
+else()
+    message(STATUS "compile with debug mode")
+    set(CMAKE_BUILD_TYPE "Debug")
 endif()
 
-# TODO: Add tests and install targets if needed.
+set(CMAKE_CXX_FLAGS_DEBUG "$ENV{CXXFLAGS} -std=c++11 -O0 -fprofile-arcs -ftest-coverage -pg -Wall -g -ggdb")
+set(CMAKE_CXX_FLAGS_RELEASE "$ENV{CXXFLAGS} -std=c++11 -O3 -Wall -DNDEBUG")
+
+add_executable (threadxx threadxx.cpp)
+target_link_libraries (threadxx pthread)

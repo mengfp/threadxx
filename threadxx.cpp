@@ -244,7 +244,7 @@ void test_blocking_queue()
 			ticktock tt(t);
 			for (int i = 0; i < 10000000; i++)
 			{
-				int x;
+				int x = 0;
 				q.Pop(x);
 				q.Push(x + 1);
 			}

@@ -96,15 +96,7 @@ private:
 private:
 	int Try()
 	{
-		if (count == 0)
-		{
-			return 1;
-		}
-		else
-		{
-			--count;
-			return 0;
-		}
+		return count ? (--count, 0) : 1;
 	}
 
 public:
@@ -129,8 +121,7 @@ public:
 			std::unique_lock<Spinlock> lock(spinlock);
 			count += n;
 		}
-		while (n-- > 0)
-			cv.notify_one();
+		cv.notify_all();
 		return 0;
 	}
 
@@ -192,14 +183,9 @@ public:
 	int Pop(T& t)
 	{
 		std::unique_lock<Spinlock> lock(spinlock);
-		if (std::queue<T>::empty())
-			return 1;
-		else
-		{
-			t = std::queue<T>::front();
-			std::queue<T>::pop();
-			return 0;
-		}
+		return std::queue<T>::empty() ? 1
+			: (t = std::queue<T>::front(),
+				std::queue<T>::pop(), 0);
 	}
 };
 
@@ -209,6 +195,13 @@ class BlockingQueue : public std::queue<T>
 private:
 	Spinlock spinlock;
 	std::condition_variable_any cv;
+
+private:
+	int Try(T& t)
+	{
+		return std::queue<T>::empty() ? 1
+			: (t = std::queue<T>::front(), std::queue<T>::pop(), 0);
+	}
 
 public:
 	int IsEmpty()
@@ -226,33 +219,35 @@ public:
 		cv.notify_one();
 	}
 
-	int Pop(T& t, int timeout = -1)
+	int Pop(T& t)
 	{
 		std::unique_lock<Spinlock> lock(spinlock);
-
-		if (!std::queue<T>::empty())
-		{
-			t = std::queue<T>::front();
-			std::queue<T>::pop();
-			return 0;
-		}
-
-		if (timeout == 0)
-			return 1;
-		
-		if (timeout < 0)
+		while (Try(t))
 			cv.wait(lock);
+		return 0;
+	}
+
+	int TryPop(T& t)
+	{
+		std::unique_lock<Spinlock> lock(spinlock);
+		return Try(t);
+	}
+
+	int TimedPop(T& t, int timeout)
+	{
+		std::unique_lock<Spinlock> lock(spinlock);
+		return Try(t) ? 
+			(cv.wait_for(lock, std::chrono::milliseconds(timeout)), Try(t)) : 0;
+	}
+
+	int Pop(T& t, int timeout)
+	{
+		if (timeout < 0)
+			return Pop(t);
+		else if (timeout == 0)
+			return TryPop(t);
 		else
-			cv.wait_for(lock, std::chrono::milliseconds(timeout));
-
-		if (!std::queue<T>::empty())
-		{
-			t = std::queue<T>::front();
-			std::queue<T>::pop();
-			return 0;
-		}
-
-		return 1;
+			return TimedPop(t, timeout);
 	}
 };
 
