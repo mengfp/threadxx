@@ -42,13 +42,9 @@ inline void yield() {
 
 class Spinlock {
  private:
-  std::atomic_flag flag;
+  std::atomic_flag flag = ATOMIC_FLAG_INIT;
 
  public:
-  Spinlock() {
-    flag.clear();
-  }
-
   void Lock() {
     while (flag.test_and_set(std::memory_order_acquire)) yield();
   }
@@ -81,55 +77,50 @@ class Semaphore {
   std::condition_variable_any cv;
 
  private:
-  int Try() {
-    return count ? (--count, 0) : 1;
+  bool Try() {
+    return count ? (--count, true) : false;
   }
 
  public:
   Semaphore(int ninit = 0) : count(ninit) {
   }
 
-  int Post() {
+  void Post() {
     {
       std::unique_lock<Spinlock> lock(spinlock);
       ++count;
     }
     cv.notify_one();
-    return 0;
   }
 
-  int Post(int n) {
+  void Post(int n) {
     {
       std::unique_lock<Spinlock> lock(spinlock);
       count += n;
     }
     cv.notify_all();
-    return 0;
   }
 
-  int Wait() {
+  void Wait() {
     std::unique_lock<Spinlock> lock(spinlock);
-    while (Try()) cv.wait(lock);
-    return 0;
+    while (!Try()) cv.wait(lock);
   }
 
-  int TryWait() {
+  bool TryWait() {
     std::unique_lock<Spinlock> lock(spinlock);
     return Try();
   }
 
-  int TimedWait(int msec) {
+  bool TimedWait(int msec) {
     std::unique_lock<Spinlock> lock(spinlock);
-    if (Try()) {
-      cv.wait_for(lock, std::chrono::milliseconds(msec));
-      return Try();
-    }
-    return 0;
+    if (Try()) return true;
+    cv.wait_for(lock, std::chrono::milliseconds(msec));
+    return Try();
   }
 
-  int Wait(int msec) {
+  bool Wait(int msec) {
     if (msec < 0)
-      return Wait();
+      return Wait(), true;
     else if (msec == 0)
       return TryWait();
     else
@@ -143,7 +134,7 @@ class SafeQueue : public std::queue<T> {
   Spinlock spinlock;
 
  public:
-  int IsEmpty() {
+  bool IsEmpty() {
     std::unique_lock<Spinlock> lock(spinlock);
     return std::queue<T>::empty();
   }
@@ -153,11 +144,12 @@ class SafeQueue : public std::queue<T> {
     std::queue<T>::push(t);
   }
 
-  int Pop(T& t) {
+  bool Pop(T& t) {
     std::unique_lock<Spinlock> lock(spinlock);
-    return std::queue<T>::empty()
-             ? 1
-             : (t = std::queue<T>::front(), std::queue<T>::pop(), 0);
+    if (std::queue<T>::empty()) return false;
+    t = std::queue<T>::front();
+    std::queue<T>::pop();
+    return true;
   }
 };
 
@@ -168,14 +160,15 @@ class BlockingQueue : public std::queue<T> {
   std::condition_variable_any cv;
 
  private:
-  int Try(T& t) {
-    return std::queue<T>::empty()
-             ? 1
-             : (t = std::queue<T>::front(), std::queue<T>::pop(), 0);
+  bool Try(T& t) {
+    if (std::queue<T>::empty()) return false;
+    t = std::queue<T>::front();
+    std::queue<T>::pop();
+    return true;
   }
 
  public:
-  int IsEmpty() {
+  bool IsEmpty() {
     std::unique_lock<Spinlock> lock(spinlock);
     return std::queue<T>::empty();
   }
@@ -188,27 +181,26 @@ class BlockingQueue : public std::queue<T> {
     cv.notify_one();
   }
 
-  int Pop(T& t) {
+  void Pop(T& t) {
     std::unique_lock<Spinlock> lock(spinlock);
-    while (Try(t)) cv.wait(lock);
-    return 0;
+    while (!Try(t)) cv.wait(lock);
   }
 
-  int TryPop(T& t) {
+  bool TryPop(T& t) {
     std::unique_lock<Spinlock> lock(spinlock);
     return Try(t);
   }
 
-  int TimedPop(T& t, int timeout) {
+  bool TimedPop(T& t, int timeout) {
     std::unique_lock<Spinlock> lock(spinlock);
-    return Try(t)
-             ? (cv.wait_for(lock, std::chrono::milliseconds(timeout)), Try(t))
-             : 0;
+    if (Try(t)) return true;
+    cv.wait_for(lock, std::chrono::milliseconds(timeout));
+    return Try(t);
   }
 
-  int Pop(T& t, int timeout) {
+  bool Pop(T& t, int timeout) {
     if (timeout < 0)
-      return Pop(t);
+      return Pop(t), true;
     else if (timeout == 0)
       return TryPop(t);
     else
@@ -235,7 +227,7 @@ class MessageQueue : public BlockingQueue<Message*> {
  public:
   ~MessageQueue() {
     Message* p;
-    while (Pop(p, 0) == 0) delete p;
+    while (TryPop(p)) delete p;
   }
 
   void Push(Message* p) {
@@ -280,22 +272,18 @@ class Thread {
     mq->Push(new Message(TMSG_TIMEOUT, timeout));
   }
 
-  int PostMessage(Message* p) {
-    if (th && p && p->type >= 0) {
-      mq->Push(p);
-      return 0;
-    } else {
-      delete p;
-      return -1;
-    }
+  bool PostMessage(Message* p) {
+    if (th && p && p->type >= 0)
+      return mq->Push(p), true;
+    else
+      return delete p, false;
   }
 
-  int PostMessage(int type, long long wParam = 0, long long lParam = 0) {
-    if (th && type >= 0) {
-      mq->Push(new Message(type, wParam, lParam));
-      return 0;
-    } else
-      return -1;
+  bool PostMessage(int type, long long wParam = 0, long long lParam = 0) {
+    if (th && type >= 0)
+      return mq->Push(new Message(type, wParam, lParam)), true;
+    else
+      return false;
   }
 
   void SetPriority(int priority) {
@@ -343,10 +331,10 @@ class Thread {
   void Run() {
     Message* p = nullptr;
     while (!quit) {
-      if (mq->Pop(p, timeout) == 0 && p) {
+      if (mq->Pop(p, timeout) && p) {
         ProcessMessage(p);
         delete p;
-        while (mq->TryPop(p) == 0 && p) {
+        while (mq->TryPop(p) && p) {
           ProcessMessage(p);
           delete p;
         }
