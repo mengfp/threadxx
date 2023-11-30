@@ -235,7 +235,7 @@ class MessageQueue : public BlockingQueue<Message*> {
   }
 
   void Push(int type, long long wParam = 0, long long lParam = 0) {
-    Push(new Message(type, wParam, lParam));
+    BlockingQueue<Message*>::Push(new Message(type, wParam, lParam));
   }
 };
 
@@ -256,12 +256,14 @@ class Thread {
 
   virtual ~Thread() {
     Quit();
-    if (local_mq) delete local_mq;
+    if (local_mq) {
+      delete local_mq;
+    }
   }
 
   void Quit() {
     if (th) {
-      mq->Push(new Message(TMSG_QUIT));
+      mq->Push(TMSG_QUIT);
       th->join();
       delete th;
       th = 0;
@@ -269,25 +271,32 @@ class Thread {
   }
 
   void SetTimeout(int timeout) {
-    mq->Push(new Message(TMSG_TIMEOUT, timeout));
+    mq->Push(TMSG_TIMEOUT, timeout);
   }
 
   bool PostMessage(Message* p) {
-    if (th && p && p->type >= 0)
-      return mq->Push(p), true;
-    else
-      return delete p, false;
+    if (th && p && p->type >= 0) {
+      mq->Push(p);
+      return true;
+    } else {
+      delete p;
+      return false;
+    }
   }
 
   bool PostMessage(int type, long long wParam = 0, long long lParam = 0) {
-    if (th && type >= 0)
-      return mq->Push(new Message(type, wParam, lParam)), true;
-    else
+    if (th && type >= 0) {
+      mq->Push(type, wParam, lParam);
+      return true;
+    } else {
       return false;
+    }
   }
 
   void SetPriority(int priority) {
-    if (th) SetThreadPriority(th->native_handle(), priority);
+    if (th) {
+      SetThreadPriority(th->native_handle(), priority);
+    }
   }
 
  protected:
@@ -310,8 +319,8 @@ class Thread {
   MessageQueue* local_mq;
   MessageQueue* mq;
   std::thread* th;
-  int timeout;
-  bool quit;
+  volatile int timeout;
+  volatile bool quit;
 
  private:
   static void ThreadProc(Thread* p) {
@@ -322,25 +331,33 @@ class Thread {
     if (p->type >= 0) {
       OnMessage(p);
       OnMessage(*p);
-    } else if (p->type == TMSG_TIMEOUT)
+    } else if (p->type == TMSG_TIMEOUT) {
       timeout = (int)p->wParam;
-    else
+    } else if (p->type == TMSG_QUIT) {
       quit = true;
+    }
   }
 
   void Run() {
     Message* p = nullptr;
-    while (!quit) {
+    while (true) {
       if (mq->Pop(p, timeout) && p) {
         ProcessMessage(p);
         delete p;
+        if (quit) {
+          break;
+        }
         while (mq->TryPop(p) && p) {
           ProcessMessage(p);
           delete p;
+          if (quit) {
+            break;
+          }
         }
         OnIdle();
-      } else
+      } else {
         OnTimeout();
+      }
     }
     OnQuit();
   }
