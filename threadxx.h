@@ -345,13 +345,15 @@ class Thread {
         ProcessMessage(p);
         delete p;
         if (quit) {
-          break;
+          OnQuit();
+          return;
         }
         while (mq->TryPop(p) && p) {
           ProcessMessage(p);
           delete p;
           if (quit) {
-            break;
+            OnQuit();
+            return;
           }
         }
         OnIdle();
@@ -359,7 +361,6 @@ class Thread {
         OnTimeout();
       }
     }
-    OnQuit();
   }
 };
 
