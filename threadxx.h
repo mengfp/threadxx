@@ -70,9 +70,52 @@ class Spinlock {
   }
 };
 
+class Condition {
+ private:
+  volatile bool value = false;
+  Spinlock spinlock;
+  std::condition_variable_any cv;
+
+ public:
+  bool Get() {
+    return value;
+  }
+
+  void Set() {
+    if (value) {
+      return;
+    }
+    {
+      std::unique_lock<Spinlock> lock(spinlock);
+      value = true;
+    }
+    cv.notify_all();
+  }
+
+  void Reset() {
+    value = false;
+  }
+
+  bool Wait(int msec = -1) {
+    if (value) {
+      return true;
+    }
+    std::unique_lock<Spinlock> lock(spinlock);
+    if (value) {
+      return true;
+    }
+    if (msec < 0) {
+      cv.wait(lock);
+    } else {
+      cv.wait_for(lock, std::chrono::milliseconds(msec));
+    }
+    return value;
+  }
+};
+
 class Semaphore {
  private:
-  int count;
+  volatile int count;
   Spinlock spinlock;
   std::condition_variable_any cv;
 
@@ -211,12 +254,13 @@ class BlockingQueue : public std::queue<T> {
 class Message {
  public:
   int type;
-  long long wParam;
-  long long lParam;
+  long long first;
+  long long second;
+  Semaphore* sem;
 
  public:
-  Message(int type = 0, long long wParam = 0, long long lParam = 0)
-    : type(type), wParam(wParam), lParam(lParam) {
+  Message(int type = 0, long long first = 0, long long second = 0)
+    : type(type), first(first), second(second), sem(nullptr) {
   }
 
   virtual ~Message() {
@@ -232,10 +276,6 @@ class MessageQueue : public BlockingQueue<Message*> {
 
   void Push(Message* p) {
     BlockingQueue<Message*>::Push(p);
-  }
-
-  void Push(int type, long long wParam = 0, long long lParam = 0) {
-    BlockingQueue<Message*>::Push(new Message(type, wParam, lParam));
   }
 };
 
@@ -263,7 +303,7 @@ class Thread {
 
   void Quit() {
     if (th) {
-      mq->Push(TMSG_QUIT);
+      mq->Push(new Message(TMSG_QUIT));
       th->join();
       delete th;
       th = 0;
@@ -271,23 +311,43 @@ class Thread {
   }
 
   void SetTimeout(int timeout) {
-    mq->Push(TMSG_TIMEOUT, timeout);
+    mq->Push(new Message(TMSG_TIMEOUT, timeout));
   }
 
-  bool PostMessage(Message* p) {
+  bool PostMessage(Message* p, bool wait = false) {
     if (th && p && p->type >= 0) {
-      mq->Push(p);
-      return true;
+      if (wait) {
+        Semaphore sem;
+        p->sem = &sem;
+        mq->Push(p);
+        sem.Wait();
+        return true;
+      } else {
+        mq->Push(p);
+        return true;
+      }
     } else {
       delete p;
       return false;
     }
   }
 
-  bool PostMessage(int type, long long wParam = 0, long long lParam = 0) {
+  bool PostMessage(int type,
+                   long long first = 0,
+                   long long second = 0,
+                   bool wait = false) {
     if (th && type >= 0) {
-      mq->Push(type, wParam, lParam);
-      return true;
+      auto p = new Message(type, first, second);
+      if (wait) {
+        Semaphore sem;
+        p->sem = &sem;
+        mq->Push(p);
+        sem.Wait();
+        return true;
+      } else {
+        mq->Push(p);
+        return true;
+      }
     } else {
       return false;
     }
@@ -332,7 +392,7 @@ class Thread {
       OnMessage(p);
       OnMessage(*p);
     } else if (p->type == TMSG_TIMEOUT) {
-      timeout = (int)p->wParam;
+      timeout = (int)p->first;
     } else if (p->type == TMSG_QUIT) {
       quit = true;
     }
@@ -343,6 +403,9 @@ class Thread {
     while (true) {
       if (mq->Pop(p, timeout) && p) {
         ProcessMessage(p);
+        if (p->sem) {
+          p->sem->Post();
+        }
         delete p;
         if (quit) {
           OnQuit();
@@ -350,6 +413,9 @@ class Thread {
         }
         while (mq->TryPop(p) && p) {
           ProcessMessage(p);
+          if (p->sem) {
+            p->sem->Post();
+          }
           delete p;
           if (quit) {
             OnQuit();
